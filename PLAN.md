@@ -200,5 +200,5 @@ Push to the **private** repo after each phase.
 
 ## 8. Open decisions (need the team)
 1. ~~LLM provider~~ **Decided: Groq** (`openai/gpt-oss-120b` primary). Action: create the key, put it only in `.env` / host secrets, and consider the Developer plan.
-2. **Hosting platform** and who holds the account.
-3. Registry: Docker Hub or GHCR (namespace).
+2. ~~Hosting~~ **Decided: team VPS** (`inovate` alias): nginx + Let's Encrypt at `https://bup-preli-la-team.inovate.it.com` → container on `127.0.0.1:8090`. Plain HTTP is also served without a redirect (a 301 breaks POST). Deploy with `scripts/deploy_vps.sh`.
+3. ~~Registry~~ **Decided: Docker Hub** (multi-arch push at release).
