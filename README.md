@@ -253,11 +253,11 @@ tests/                 pytest suite + paraphrases.json
 
 ## 7. Security and secret handling
 - `.env` is git-ignored and docker-ignored. Only `.env.example`, with empty values, is committed.
-- The Groq key is injected at runtime and is never logged, echoed or baked into the image.
+- API keys are injected at runtime and are never logged, echoed or baked into the image.
 - Error responses carry only generic messages and field locations. Input values and stack traces are never returned.
 
 ## 8. Known limitations
-- **Free-tier limits.** Groq allows roughly 5–7 fresh calls per minute per model, and Cerebras `gpt-oss-120b` allows 5 requests/min. Cerebras `qwen-3.8-27b` (450 requests/min, 1M tokens/day on the free tier) carries the load in bursts. Only if every provider is exhausted do requests fall back to the rule parser.
+- **Free-tier limits.** Groq allows roughly 5–7 fresh calls per minute per model, and Cerebras `gpt-oss-120b` allows 5 requests/min. Cerebras `qwen-3.8-27b` (450 requests/min, 450K tokens/min) carries the load in bursts. Only if every provider is exhausted do requests fall back to the rule parser.
 - Notes are expected to express whole-hour windows, as the Problem Statement specifies. Sub-hour times are interpreted by the LLM at hour granularity.
 - **Directive conflicts:** if hard directives truly contradict each other (organizers guarantee they won't), the service returns the minimum-violation schedule and says so in `plan_summary`, instead of failing.
 - **Cache:** it is in-memory and per process, and is lost on restart.
