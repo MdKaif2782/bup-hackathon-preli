@@ -102,7 +102,7 @@ Prompt contents:
 - ~8 few-shot examples written **as our own paraphrases** (never copy sample wording).
 
 Reliability:
-- 10s timeout, 1 retry, then a **degraded fallback**: a regex/rule parser that is used *only* when the LLM errors, flagged in `explanation`. The LLM stays the primary path, which keeps us compliant.
+- 8s timeout per model, walk the Groq fallback chain on 429/timeout, then a **degraded fallback**: a regex/rule parser that is used *only* when the LLM errors, flagged in `explanation`. The LLM stays the primary path, which keeps us compliant.
 - In-memory LRU cache keyed on the note text. Repeated judge calls then become instant.
 
 ### 4.2 Guardrails (`guardrails.py`)
