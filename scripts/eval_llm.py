@@ -1,6 +1,6 @@
 """Measure LLM interpretation accuracy on tests/paraphrases.json.
 
-Usage: python scripts/eval_llm.py [--model openai/gpt-oss-20b] [--batch 3] [--sleep 0]
+Usage: python scripts/eval_llm.py [--model groq:openai/gpt-oss-20b | cerebras:qwen-3.8-27b] [--batch 3] [--sleep 0]
 Notes are sent in batches (like real 1-3 note scenarios) through the real
 interpretation path: Groq -> guardrails -> canonical directive.
 """
@@ -23,13 +23,13 @@ load_dotenv(ROOT / ".env")
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", help="force a single model (disables fallback chain)")
+    ap.add_argument("--model", help="force a single provider:model (disables the fallback chain); "
+                                    "a bare model name means Groq")
     ap.add_argument("--batch", type=int, default=3)
     ap.add_argument("--sleep", type=float, default=0.0, help="pause between batches (rate limits)")
     args = ap.parse_args()
     if args.model:
-        os.environ["GROQ_MODEL"] = args.model
-        os.environ["GROQ_FALLBACK_MODELS"] = ""
+        os.environ["LLM_CHAIN"] = args.model if ":" in args.model else f"groq:{args.model}"
 
     from app.pipeline import interpret
     from app.schemas import OptimizeRequest
