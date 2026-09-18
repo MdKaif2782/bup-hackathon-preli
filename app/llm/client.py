@@ -17,7 +17,7 @@ PER_CALL_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "8"))
 TOTAL_BUDGET_S = float(os.getenv("LLM_TOTAL_BUDGET_S", "18"))
 CACHE_SIZE = 2048
 # qwen on Groq enforces 1000 output tokens/min; the request cap counts against it
-MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "900"))
+MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "600"))
 
 
 class LLMUnavailable(Exception):
