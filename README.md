@@ -6,9 +6,9 @@ BUP CSE Fest 2026 Hackathon, Online Preliminary. This is one HTTP service. It re
 |---|---|
 | Live endpoint | **`https://bup-preli-la-team.inovate.it.com`** (plain `http://` works too, with no redirect) |
 | Endpoints | `GET /health` · `POST /optimize-energy` |
-| Docker fallback image | **`damegami2782/gridwise:v1.0.0`** (linux/amd64 + linux/arm64) |
+| Docker fallback image | **`damegami2782/gridwise:v1.1.0`** (linux/amd64 + linux/arm64) |
 | Service port | `8000` (binds `0.0.0.0`) |
-| LLM provider | Groq: `openai/gpt-oss-120b`, falling back to `openai/gpt-oss-20b`, then `qwen/qwen3.8-27b` |
+| LLM providers | Groq and Cerebras. Chain: `groq:openai/gpt-oss-120b` → `cerebras:qwen-3.8-27b` → `cerebras:gpt-oss-120b` → `groq:openai/gpt-oss-20b` → `groq:qwen/qwen3.8-27b` |
 | Optimizer | Linear program solved with HiGHS via `scipy.optimize.linprog` |
 
 ---
@@ -16,23 +16,24 @@ BUP CSE Fest 2026 Hackathon, Online Preliminary. This is one HTTP service. It re
 ## 1. Quickstart: Docker (fastest)
 
 ```bash
-docker pull damegami2782/gridwise:v1.0.0
+docker pull damegami2782/gridwise:v1.1.0
 
 docker run -d --name gridwise -p 8000:8000 \
   -e GROQ_API_KEY=<your-groq-api-key> \
   -e GROQ_MODEL=openai/gpt-oss-120b \
   -e GROQ_FALLBACK_MODELS=openai/gpt-oss-20b,qwen/qwen3.8-27b \
-  damegami2782/gridwise:v1.0.0
+  -e CEREBRAS_API_KEY=<optional-cerebras-api-key> \
+  damegami2782/gridwise:v1.1.0
 
 curl http://localhost:8000/health
 # {"status":"ok"}   (ready in ~2 s after start)
 ```
 
-The image contains **no secrets**. The Groq key is passed only at runtime (`-e` or `--env-file .env`).
+The image contains **no secrets**. API keys are passed only at runtime (`-e` or `--env-file .env`).
 
 ## 2. Quickstart: from source
 
-Requires Python ≥ 3.11 and a Groq API key (free at <https://console.groq.com/keys>).
+Requires Python ≥ 3.11 and a Groq API key (free at <https://console.groq.com/keys>). A Cerebras key (free at <https://cloud.cerebras.ai>) is optional and adds high-rate-limit fallback models.
 
 ```bash
 git clone https://github.com/MdKaif2782/bup-hackathon-preli.git
@@ -54,14 +55,17 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 |---|---|---|---|
 | `GROQ_API_KEY` | **yes** | none | Groq API key (secret; never commit it) |
 | `GROQ_MODEL` | no | `openai/gpt-oss-120b` | Primary interpretation model |
-| `GROQ_FALLBACK_MODELS` | no | *(empty)* | Comma-separated models tried in order on error / rate limit. We use `openai/gpt-oss-20b,qwen/qwen3.8-27b` |
+| `GROQ_FALLBACK_MODELS` | no | *(empty)* | Comma-separated Groq models tried last. We use `openai/gpt-oss-20b,qwen/qwen3.8-27b` |
+| `CEREBRAS_API_KEY` | recommended | none | Enables the Cerebras models (secret) |
+| `CEREBRAS_MODELS` | no | `qwen-3.8-27b,gpt-oss-120b` | Cerebras models, tried right after `GROQ_MODEL` |
+| `LLM_CHAIN` | no | *(built from the above)* | Explicit override, e.g. `cerebras:qwen-3.8-27b,groq:openai/gpt-oss-120b` |
 | `LLM_TIMEOUT_S` | no | `8` | Timeout per model call |
 | `LLM_TOTAL_BUDGET_S` | no | `18` | Total LLM time budget per request (judge timeout is 30 s) |
 | `LLM_MAX_OUTPUT_TOKENS` | no | `600` | Output token cap per call |
 | `PORT` | no | `8000` | Container listen port |
 | `WEB_CONCURRENCY` | no | `1` | Uvicorn workers (1 keeps the note cache shared) |
 
-Without `GROQ_API_KEY` the service still starts and answers. Note interpretation then falls back to the degraded rule parser (see §5.4). Always configure the key for real evaluation.
+Providers without a key are skipped. With no key at all the service still starts and answers. Note interpretation then falls back to the degraded rule parser (see §5.4). Always configure the key for real evaluation.
 
 ---
 
@@ -144,9 +148,10 @@ The tests cover:
 ### 4.3 Paraphrase robustness of the LLM (needs `GROQ_API_KEY`)
 ```bash
 python scripts/eval_llm.py                            # full fallback chain
-python scripts/eval_llm.py --model openai/gpt-oss-20b --sleep 13   # one model at a time
+python scripts/eval_llm.py --model groq:openai/gpt-oss-20b --sleep 13   # one model at a time
+python scripts/eval_llm.py --model cerebras:qwen-3.8-27b
 ```
-This runs 31 self-written paraphrased notes (`tests/paraphrases.json`). They cover 12-hour/24-hour times, noon/midnight, overnight windows, single hours, "halve / one-fifth / three quarters", "% reduction" vs "% remaining", % of battery capacity, and distractors that mention times. Result: **31/31** for each of the three models.
+This runs 31 self-written paraphrased notes (`tests/paraphrases.json`). They cover 12-hour/24-hour times, noon/midnight, overnight windows, single hours, "halve / one-fifth / three quarters", "% reduction" vs "% remaining", % of battery capacity, and distractors that mention times. Result: **31/31** for each of the five models on their own. A burst of 30 back-to-back uncached requests to `cerebras:qwen-3.8-27b` had 0 failures (p95 1.1 s).
 
 ---
 
@@ -159,7 +164,7 @@ This runs 31 self-written paraphrased notes (`tests/paraphrases.json`). They cov
         ┌──────────────┐   strict JSON schema    ┌───────────────────────┐
         │ LLM          │ ──────────────────────► │ Guardrails            │
         │ interpreter  │  type, time windows,    │ (deterministic code)  │
-        │ (Groq)       │  value + unit per note  │ windows → hours       │
+        │(Groq/Cerebras)│ value + unit per note  │ windows → hours       │
         └──────────────┘                         │ % → factor / kWh      │
           ▲ fallback chain + cache               │ range and shape checks│
           │ rule parser if all LLMs fail         └──────────┬────────────┘
@@ -176,7 +181,7 @@ This runs 31 self-written paraphrased notes (`tests/paraphrases.json`). They cov
 
 ### 5.1 LLM role
 The LLM is **the** interpreter of `operator_notes`, and its output directly defines the optimizer's constraints.
-- All notes in a request are sent in one call with `temperature=0` and Groq **strict `json_schema` structured output** (`app/llm/prompt.py`).
+- All notes in a request are sent in one call with `temperature=0` and **strict `json_schema` structured output** (Groq and Cerebras) (`app/llm/prompt.py`).
 - For each note the model returns:
   - `directive_type`, one of the 6 allowed types;
   - time `windows` as `[start_hour, end_hour)`;
@@ -215,7 +220,7 @@ A 24-hour linear program with 5 variables per hour: grid, solar used, charge, di
 - **Speed:** about 3 ms per solve. The result is the true optimum, and matches the reference cost on all public samples.
 
 ### 5.4 Reliability
-- **Model fallback chain.** Each Groq model has its own rate-limit bucket. On a 429 the model is skipped for its `retry-after` period and the next model is used immediately.
+- **Multi-provider model chain.** Every Groq and Cerebras model has its own rate-limit bucket. On a 429 the model is skipped for its `retry-after` period and the next model is used immediately. Cerebras `qwen-3.8-27b` (450 requests/min) is the high-throughput backstop; it runs with reasoning disabled, which keeps it under the output-token cap.
 - **Timeouts:** 8 s per call and 18 s per request, inside the judge's 30 s.
 - **LRU cache** of interpretations per note text, so repeated notes are answered instantly.
 - **Degraded rule parser** (`app/llm/fallback.py`). It is used **only** if every LLM call fails, is flagged in `explanation`, and passes through the same guardrails.
@@ -227,7 +232,7 @@ A 24-hour linear program with 5 variables per hour: grid, solar used, charge, di
 app/main.py            FastAPI routes + 400/422/500 handlers
 app/schemas.py         request/response models
 app/llm/prompt.py      system prompt + strict JSON schema
-app/llm/client.py      Groq client, fallback chain, cooldown, cache
+app/llm/client.py      Groq + Cerebras clients, model chain, cooldown, cache
 app/llm/fallback.py    degraded rule parser (LLM outage only)
 app/guardrails.py      deterministic validation + conversion
 app/optimizer.py       LP model, relaxation, rounding, totals
@@ -252,7 +257,7 @@ tests/                 pytest suite + paraphrases.json
 - Error responses carry only generic messages and field locations. Input values and stack traces are never returned.
 
 ## 8. Known limitations
-- **Groq free-tier limits** (per model: 30 requests/min, 8K tokens/min) allow roughly 5–7 fresh LLM calls per minute per model. The three-model chain and the cache absorb bursts. Sustained high-rate traffic without a paid Groq tier can push requests onto the less capable rule parser.
+- **Free-tier limits.** Groq allows roughly 5–7 fresh calls per minute per model, and Cerebras `gpt-oss-120b` allows 5 requests/min. Cerebras `qwen-3.8-27b` (450 requests/min, 1M tokens/day on the free tier) carries the load in bursts. Only if every provider is exhausted do requests fall back to the rule parser.
 - Notes are expected to express whole-hour windows, as the Problem Statement specifies. Sub-hour times are interpreted by the LLM at hour granularity.
 - **Directive conflicts:** if hard directives truly contradict each other (organizers guarantee they won't), the service returns the minimum-violation schedule and says so in `plan_summary`, instead of failing.
 - **Cache:** it is in-memory and per process, and is lost on restart.
@@ -260,7 +265,7 @@ tests/                 pytest suite + paraphrases.json
 ## 9. Dependencies and credits
 - [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), [Pydantic](https://docs.pydantic.dev/): API and validation
 - [SciPy](https://scipy.org/) `linprog` with the [HiGHS](https://highs.dev/) solver, and NumPy: optimization
-- [Groq Python SDK](https://github.com/groq/groq-python): LLM access; the models are OpenAI gpt-oss-120b / gpt-oss-20b and Qwen 3.8 27B, served by Groq
+- [Groq Python SDK](https://github.com/groq/groq-python) and [OpenAI Python SDK](https://github.com/openai/openai-python) (for Cerebras's OpenAI-compatible API): LLM access; the models are OpenAI gpt-oss-120b / gpt-oss-20b and Qwen 3.8 27B, served by Groq and Cerebras
 - python-dotenv, pytest, httpx
 - Built with help from Claude Code (Anthropic) as an AI coding assistant. The architecture and design decisions are the team's.
 
