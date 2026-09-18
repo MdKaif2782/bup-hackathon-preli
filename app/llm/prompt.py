@@ -1,7 +1,7 @@
 """Prompt + strict JSON schema for operator-note interpretation.
 
 The LLM does the language work (relevance, directive type, time window, quantity + unit).
-Deterministic code (app/llm/interpret.py) turns windows into hour lists and units into
+Deterministic code (app/guardrails.py) turns windows into hour lists and units into
 factor / kWh, which removes off-by-one and 1-x arithmetic mistakes.
 """
 
@@ -26,6 +26,7 @@ Quantity (value + value_unit):
 - kwh: absolute energy (reserve level kWh, grid cap kWh per hour).
 - percent_remaining: for solar, % of normal output still available ("drops to 20%" -> 20, "a quarter of forecast" -> 25, "half" -> 50, "one-fifth" -> 20). For reserve, % of battery capacity ("half the battery capacity" -> 50).
 - percent_reduction: for solar, % cut ("80% reduction", "reduced by three quarters" -> 75).
+- Read carefully which share is LEFT vs CUT: "only three quarters of the forecast is usable" -> 75 percent_remaining; "loses three quarters" -> 75 percent_reduction; "produces nothing" -> 0 percent_remaining.
 - none (value 0): no_charge_window, no_discharge_window, no_op.
 Never invent values; use only numbers stated or clearly implied by the note.
 
