@@ -235,7 +235,7 @@ app/validator.py       judge-style replay of a plan
 app/pipeline.py        LLM → guardrails → optimizer → self-check
 scripts/run_samples.py public-sample end-to-end checker
 scripts/eval_llm.py    paraphrase accuracy evaluation
-scripts/deploy_vps.sh  build + ship + restart on the team VPS
+scripts/deploy_vps.sh  release to Docker Hub + redeploy on the team VPS
 tests/                 pytest suite + paraphrases.json
 ```
 
@@ -243,7 +243,7 @@ tests/                 pytest suite + paraphrases.json
 
 ## 6. Deployment
 - **Live service:** Ubuntu VPS → Docker container (`docker-compose.yml`) on `127.0.0.1:8090` → nginx reverse proxy with a Let's Encrypt certificate at `bup-preli-la-team.inovate.it.com`. The container uses `restart: unless-stopped`.
-- **Redeploy:** `scripts/deploy_vps.sh`.
+- **Release + redeploy:** `scripts/deploy_vps.sh v1.0.x` builds a multi-arch image, pushes it to Docker Hub, then pulls and restarts that exact tag on the VPS.
 - **Fallback image:** `damegami2782/gridwise:v1.0.0` on Docker Hub. It is multi-arch, runs as a non-root user and has a built-in `HEALTHCHECK`.
 
 ## 7. Security and secret handling
