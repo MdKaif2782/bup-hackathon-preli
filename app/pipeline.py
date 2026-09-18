@@ -21,8 +21,9 @@ def interpret(req: OptimizeRequest) -> tuple[list[dict], str]:
     notes = req.operator_notes
     try:
         items, source = interpret_notes(notes)
-    except LLMUnavailable as exc:
-        log.warning("all LLM models unavailable (%s); using fallback parser", exc)
+    except Exception as exc:  # LLMUnavailable or anything unexpected: degrade, never 5xx
+        reason = str(exc) if isinstance(exc, LLMUnavailable) else type(exc).__name__
+        log.warning("LLM interpretation unavailable (%s); using fallback parser", reason)
         items, source = [interpret_fallback(n) for n in notes], "fallback"
 
     directives = []
