@@ -8,6 +8,7 @@ import threading
 import time
 from collections import OrderedDict
 
+from app.guardrails import check_item
 from app.llm.prompt import RESPONSE_SCHEMA, SYSTEM_PROMPT, user_message
 
 log = logging.getLogger("gridwise.llm")
@@ -106,6 +107,7 @@ def _call_model(model: str, notes: list[str], timeout: float) -> list[dict]:
         idx = it.get("note_index")
         if not isinstance(idx, int) or not 0 <= idx < len(notes) or idx in by_idx:
             raise ValueError("bad note_index mapping")
+        check_item(it)  # guardrail failure -> caller falls through to the next model
         by_idx[idx] = it
     return [by_idx[i] for i in range(len(notes))]
 
