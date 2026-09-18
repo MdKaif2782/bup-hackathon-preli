@@ -75,6 +75,17 @@ class _LRU:
 
 _cache = _LRU(CACHE_SIZE)
 
+# model -> monotonic time until which it is skipped after a 429
+_cooldown: dict[str, float] = {}
+DEFAULT_COOLDOWN_S = 20.0
+
+
+def _retry_after(exc: Exception) -> float:
+    try:
+        return min(60.0, float(exc.response.headers.get("retry-after")))  # type: ignore[attr-defined]
+    except Exception:
+        return DEFAULT_COOLDOWN_S
+
 
 def _cache_key(note: str) -> str:
     return " ".join(note.split()).lower()
@@ -121,7 +132,11 @@ def interpret_notes(notes: list[str]) -> tuple[list[dict], str]:
 
     deadline = time.monotonic() + TOTAL_BUDGET_S
     last_err = "no model configured"
-    for model in _models():
+    models = _models()
+    now = time.monotonic()
+    ready = [m for m in models if _cooldown.get(m, 0) <= now]
+    # if everything is cooling down, still try them all rather than fail outright
+    for model in ready or models:
         remaining = deadline - time.monotonic()
         if remaining < 1.5:
             break
@@ -138,5 +153,7 @@ def interpret_notes(notes: list[str]) -> tuple[list[dict], str]:
             raise
         except Exception as exc:  # rate limit, timeout, bad JSON, schema error -> next model
             last_err = type(exc).__name__
+            if last_err == "RateLimitError":
+                _cooldown[model] = time.monotonic() + _retry_after(exc)
             log.warning("llm failed model=%s err=%s", model, last_err)
     raise LLMUnavailable(last_err)
