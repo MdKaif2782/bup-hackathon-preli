@@ -1,4 +1,5 @@
-"""Groq client: strict JSON-schema call with model fallback chain, timeouts and a note cache."""
+"""LLM client: strict JSON-schema call over a multi-provider model chain (Groq + Cerebras),
+with per-model rate-limit cooldown, timeouts and a note cache."""
 from __future__ import annotations
 
 import json
@@ -19,39 +20,63 @@ CACHE_SIZE = 2048
 # qwen on Groq enforces 1000 output tokens/min; the request cap counts against it
 MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "600"))
 
+PROVIDERS = {
+    "groq": {"key_env": "GROQ_API_KEY"},
+    "cerebras": {"key_env": "CEREBRAS_API_KEY", "base_url": "https://api.cerebras.ai/v1"},
+}
+
 
 class LLMUnavailable(Exception):
     """Every configured model failed (network, rate limit, bad output)."""
 
 
-def _models() -> list[str]:
-    primary = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
-    fallbacks = [m.strip() for m in os.getenv("GROQ_FALLBACK_MODELS", "").split(",") if m.strip()]
-    seen, out = set(), []
-    for m in [primary, *fallbacks]:
-        if m not in seen:
-            seen.add(m)
-            out.append(m)
+def _split_env(name: str, default: str = "") -> list[str]:
+    return [m.strip() for m in os.getenv(name, default).split(",") if m.strip()]
+
+
+def _models() -> list[tuple[str, str]]:
+    """Ordered (provider, model) chain; providers without an API key are skipped.
+
+    Default order: Groq primary -> Cerebras models (high rate limits) -> Groq fallbacks.
+    LLM_CHAIN="provider:model,..." overrides the order explicitly.
+    """
+    if os.getenv("LLM_CHAIN"):
+        chain = [tuple(e.split(":", 1)) for e in _split_env("LLM_CHAIN") if ":" in e]
+    else:
+        chain = [("groq", os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip())]
+        chain += [("cerebras", m) for m in _split_env("CEREBRAS_MODELS", "qwen-3.8-27b,gpt-oss-120b")]
+        chain += [("groq", m) for m in _split_env("GROQ_FALLBACK_MODELS")]
+    out: list[tuple[str, str]] = []
+    for provider, model in chain:
+        cfg = PROVIDERS.get(provider)
+        if cfg and os.getenv(cfg["key_env"]) and (provider, model) not in out:
+            out.append((provider, model))
     return out
 
 
-_client = None
+_clients: dict[str, object] = {}
 _client_lock = threading.Lock()
 
 
-def _get_client():
-    global _client
-    if _client is None:
+def _get_client(provider: str):
+    if provider not in _clients:
         with _client_lock:
-            if _client is None:
-                from groq import Groq
-
-                key = os.getenv("GROQ_API_KEY")
+            if provider not in _clients:
+                cfg = PROVIDERS[provider]
+                key = os.getenv(cfg["key_env"])
                 if not key:
-                    raise LLMUnavailable("GROQ_API_KEY not configured")
-                # retries handled here (model fallback), not inside the SDK
-                _client = Groq(api_key=key, timeout=PER_CALL_TIMEOUT_S, max_retries=0)
-    return _client
+                    raise LLMUnavailable(f"{cfg['key_env']} not configured")
+                # retries are handled here by walking the chain, not inside the SDKs
+                if provider == "groq":
+                    from groq import Groq
+
+                    _clients[provider] = Groq(api_key=key, timeout=PER_CALL_TIMEOUT_S, max_retries=0)
+                else:
+                    from openai import OpenAI
+
+                    _clients[provider] = OpenAI(api_key=key, base_url=cfg["base_url"],
+                                                timeout=PER_CALL_TIMEOUT_S, max_retries=0)
+    return _clients[provider]
 
 
 class _LRU:
@@ -75,8 +100,8 @@ class _LRU:
 
 _cache = _LRU(CACHE_SIZE)
 
-# model -> monotonic time until which it is skipped after a 429
-_cooldown: dict[str, float] = {}
+# (provider, model) -> monotonic time until which it is skipped after a 429
+_cooldown: dict[tuple[str, str], float] = {}
 DEFAULT_COOLDOWN_S = 20.0
 
 
@@ -91,8 +116,17 @@ def _cache_key(note: str) -> str:
     return " ".join(note.split()).lower()
 
 
-def _call_model(model: str, notes: list[str], timeout: float) -> list[dict]:
-    kwargs = dict(
+def _reasoning_kwargs(provider: str, model: str) -> dict:
+    if "gpt-oss" in model:
+        return {"reasoning_effort": "low"}
+    if provider == "cerebras" and "qwen" in model:
+        # Cerebras qwen reasons by default and the thinking tokens would exhaust the output cap
+        return {"reasoning_effort": "none"}
+    return {}
+
+
+def _call_model(provider: str, model: str, notes: list[str], timeout: float) -> list[dict]:
+    resp = _get_client(provider).chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -105,10 +139,8 @@ def _call_model(model: str, notes: list[str], timeout: float) -> list[dict]:
             "json_schema": {"name": "note_interpretations", "schema": RESPONSE_SCHEMA, "strict": True},
         },
         timeout=timeout,
+        **_reasoning_kwargs(provider, model),
     )
-    if model.startswith("openai/gpt-oss"):
-        kwargs["reasoning_effort"] = "low"
-    resp = _get_client().chat.completions.create(**kwargs)
     content = resp.choices[0].message.content or ""
     items = json.loads(content)["interpretations"]
     if not isinstance(items, list) or len(items) != len(notes):
@@ -130,30 +162,33 @@ def interpret_notes(notes: list[str]) -> tuple[list[dict], str]:
     if not missing:
         return [dict(r) for r in results], "cache"
 
-    deadline = time.monotonic() + TOTAL_BUDGET_S
-    last_err = "no model configured"
     models = _models()
+    if not models:
+        raise LLMUnavailable("no LLM provider key configured")
+    deadline = time.monotonic() + TOTAL_BUDGET_S
     now = time.monotonic()
     ready = [m for m in models if _cooldown.get(m, 0) <= now]
+    last_err = "no model available"
     # if everything is cooling down, still try them all rather than fail outright
-    for model in ready or models:
+    for provider, model in ready or models:
         remaining = deadline - time.monotonic()
         if remaining < 1.5:
             break
+        label = f"{provider}:{model}"
         try:
             t0 = time.monotonic()
-            items = _call_model(model, [notes[i] for i in missing], min(PER_CALL_TIMEOUT_S, remaining))
-            log.info("llm ok model=%s notes=%d %.2fs", model, len(missing), time.monotonic() - t0)
+            items = _call_model(provider, model, [notes[i] for i in missing], min(PER_CALL_TIMEOUT_S, remaining))
+            log.info("llm ok model=%s notes=%d %.2fs", label, len(missing), time.monotonic() - t0)
             for i, it in zip(missing, items):
                 it = {k: v for k, v in it.items() if k != "note_index"}
                 _cache.put(_cache_key(notes[i]), it)
                 results[i] = it
-            return [dict(r) for r in results], model
+            return [dict(r) for r in results], label
         except LLMUnavailable:
             raise
         except Exception as exc:  # rate limit, timeout, bad JSON, schema error -> next model
             last_err = type(exc).__name__
             if last_err == "RateLimitError":
-                _cooldown[model] = time.monotonic() + _retry_after(exc)
-            log.warning("llm failed model=%s err=%s", model, last_err)
+                _cooldown[(provider, model)] = time.monotonic() + _retry_after(exc)
+            log.warning("llm failed model=%s err=%s", label, last_err)
     raise LLMUnavailable(last_err)
