@@ -32,7 +32,7 @@ The video carries no base points. It only breaks ties, but it is still required.
 |---|---|---|
 | Language / API | **Python 3.11 + FastAPI + Uvicorn** | fastest to write, pydantic validation |
 | Optimizer | **LP via `scipy.optimize.linprog` (HiGHS)** | exact optimum in ms; hard constraints are linear |
-| LLM | provider-agnostic client, env `LLM_PROVIDER` / `LLM_MODEL` / `LLM_API_KEY`. Default: a fast model with JSON / tool output (e.g. Claude Haiku 4.5 `claude-haiku-4-5`, or gpt-4o-mini / Gemini Flash, depending on which key the team has) | p95 ≤ 5s needs a small, fast model |
+| LLM | **Groq** (`groq` SDK, OpenAI-compatible). Primary `openai/gpt-oss-120b`, fallback chain `openai/gpt-oss-20b` → `qwen/qwen3.8-27b`. Env: `GROQ_API_KEY`, `GROQ_MODEL`, `GROQ_FALLBACK_MODELS` | very fast inference keeps p95 well under 5s; all three support **strict `json_schema`** structured outputs |
 | Container | Docker (`python:3.11-slim`), port `8000`, bind `0.0.0.0` | fallback requirement |
 | Hosting | Railway / Render (paid, no sleep) / Fly.io / Cloud Run with min-instances=1 | health must be ready ≤ 60s, so **avoid free tiers that sleep** |
 | Registry | Docker Hub or GHCR, exact tag e.g. `gridwise:v1.0.0` + digest | "pullable exact tag/digest" |
@@ -68,8 +68,18 @@ Dockerfile  .dockerignore  requirements.txt  .env.example  README.md
 
 ## 4. Key design decisions
 
+### 4.0 Groq specifics
+- Call `chat.completions.create` with `response_format={"type":"json_schema","json_schema":{...,"strict":true}}`, `temperature=0`, and `reasoning_effort="low"` (gpt-oss is a reasoning model; low effort keeps latency down while staying accurate on this task).
+- **Rate limits are the main risk.** Free tier per model: 30 RPM, 1K RPD, **8K TPM**, 200K TPD. At ~1.5K tokens per call, 8K TPM allows only ~5 calls/min per model. Mitigations:
+  1. keep the system prompt + few-shots **≤ 1K tokens** and cap `max_completion_tokens`;
+  2. LRU cache on normalized note text (judges repeat requests);
+  3. on HTTP 429, switch immediately to the next model in the fallback chain (each model has its **own** limit bucket) instead of sleeping;
+  4. **strongly recommended: upgrade to the Groq Developer (pay-as-you-go) plan before 9:00 PM.** This task costs cents, and it removes the TPM ceiling during judging;
+  5. rule-based parser only as the last-resort fallback (§4.1).
+- Per-call timeout 8s. The total LLM budget per request is ≤ 15s, which stays inside the 30s judge timeout.
+
 ### 4.1 LLM interpretation: the LLM does language, code does arithmetic
-Send all notes to the LLM in **one call** (temperature 0, JSON / tool-call output). Ask it for an **intermediate schema**, not the final one:
+Send all notes to the LLM in **one call** (temperature 0, strict JSON schema output). Ask it for an **intermediate schema**, not the final one:
 
 ```json
 {"note_index":0, "directive_type":"minimum_battery_reserve",
@@ -179,7 +189,7 @@ Push to the **private** repo after each phase.
 | Risk | Mitigation |
 |---|---|
 | LLM off-by-one hours / wrong factor | intermediate schema + deterministic expansion (§4.1) |
-| Provider outage or rate limit during judging | retry, fallback parser, cache, spare key/provider via env |
+| Groq 429 (8K TPM free tier) during judging | Developer plan, small prompt, cache, per-model fallback chain, rule-parser last resort |
 | Host sleeps / cold start > 60s | paid tier or min-instances=1 |
 | LP infeasible from a misread | slack re-solve, so the response is always valid JSON |
 | Float drift fails tolerance | round, then recompute state and grid from rounded values |
@@ -189,6 +199,6 @@ Push to the **private** repo after each phase.
 ---
 
 ## 8. Open decisions (need the team)
-1. **Which LLM API key do we have?** The Claude, OpenAI, Gemini and Groq options are all plug-in via env; the default model gets pinned once we know.
+1. ~~LLM provider~~ **Decided: Groq** (`openai/gpt-oss-120b` primary). Action: create the key, put it only in `.env` / host secrets, and consider the Developer plan.
 2. **Hosting platform** and who holds the account.
 3. Registry: Docker Hub or GHCR (namespace).
