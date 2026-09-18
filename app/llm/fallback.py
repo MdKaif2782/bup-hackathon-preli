@@ -12,7 +12,7 @@ _TIME = r"(noon|midnight|\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)"
 _RANGE = re.compile(_TIME + r"\s*(?:to|until|till|through|and|-|–)\s*" + _TIME, re.I)
 _WORD_NUM = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
              "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
-_FRACTIONS = {"half": 50, "quarter": 25, "a third": 100 / 3, "one-third": 100 / 3,
+_FRACTIONS = {"half": 50, "halve": 50, "nothing": 0, "no output": 0, "zero": 0, "quarter": 25, "a third": 100 / 3, "one-third": 100 / 3,
               "one third": 100 / 3, "one-fifth": 20, "one fifth": 20, "a fifth": 20,
               "three quarters": 75, "three-quarters": 75, "two-thirds": 200 / 3}
 
@@ -40,6 +40,12 @@ def _window(note: str) -> list[dict]:
         text = re.sub(rf"\b{w}\b", str(n), text, flags=re.I)
     m = _RANGE.search(text)
     if not m:
+        single = re.search(r"(?:at|during the|for the|in the)\s+" + _TIME + r"(?:\s+hour)?", text, re.I)
+        if single and re.search(r"\d|noon|midnight", single.group(1), re.I):
+            h, mer = _parse_time(single.group(1))
+            if mer is None and h < 7:
+                h += 12
+            return [{"start_hour": h % 24, "end_hour": h % 24 + 1}]
         return []
     (s, sm), (e, em) = _parse_time(m.group(1)), _parse_time(m.group(2))
     if sm is None and em in ("pm",) and s < 12:
@@ -85,7 +91,7 @@ def interpret_fallback(note: str) -> dict:
             unit = "percent_reduction" if re.search(r"reduc|cut|by \d|lower by|decrease", low) and not re.search(r"to (about |roughly )?\d", low) else "percent_remaining"
             return {**base, "directive_type": "solar_reduction", "value": pct, "value_unit": unit,
                     "explanation": base["explanation"] + "Solar output reduced."}
-    if re.search(r"discharg", low):
+    if re.search(r"discharg|(not|never|no|cannot|from)\b.{0,25}\b(suppl|deliver|provid|export)", low):
         return {**base, "directive_type": "no_discharge_window",
                 "explanation": base["explanation"] + "Battery discharge blocked."}
     if re.search(r"charg", low):
@@ -94,7 +100,7 @@ def interpret_fallback(note: str) -> dict:
     if re.search(r"grid|import|intake|feeder|transformer|substation", low) and _kwh(note) is not None:
         return {**base, "directive_type": "max_grid_window", "value": _kwh(note), "value_unit": "kwh",
                 "explanation": base["explanation"] + "Grid import capped."}
-    if re.search(r"reserve|keep|retain|hold|at least|remain", low) and re.search(r"batter|stor", low):
+    if re.search(r"reserve|keep|retain|hold|at least|remain|minimum|maintain|never drop|below|under|cushion|buffer", low) and re.search(r"batter|stor", low):
         if _kwh(note) is not None:
             return {**base, "directive_type": "minimum_battery_reserve", "value": _kwh(note), "value_unit": "kwh",
                     "explanation": base["explanation"] + "Battery reserve required."}
