@@ -1,0 +1,9 @@
+services:
+  gridwise:
+    image: ${GRIDWISE_IMAGE:-gridwise:latest}
+    build: .
+    container_name: gridwise
+    env_file: .env            # GROQ_API_KEY, GROQ_MODEL, GROQ_FALLBACK_MODELS (never committed)
+    ports:
+      - "${HOST_BIND:-0.0.0.0}:${HOST_PORT:-8000}:8000"
+    restart: unless-stopped
